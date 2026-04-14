@@ -600,8 +600,8 @@ async function insertImage(){
     await w.write(await file.arrayBuffer());
     await w.close();
     
-    // Insert markdown syntax
-    const imgPath='IMG_'+activeTab.name.replace('.md','')+'/'+file.name;
+    // Insert markdown syntax - relative path from markdown file location
+    const imgPath='IMG/'+file.name;
     const mdSyntax=`![${file.name}](${imgPath})`;
     const editor=document.getElementById('editor');
     const pos=editor.selectionStart;
@@ -825,13 +825,11 @@ document.addEventListener('keyup',e=>{mmKeys[e.key]=false;});
 document.getElementById('rename-input').addEventListener('keydown',e=>{if(e.key==='Enter')doRename();});
 document.getElementById('new-input').addEventListener('keydown',e=>{if(e.key==='Enter')doNew();});
 
-// ── Image tagging (sidecar .tags.json files) ──────────────────────────────
+// ── Image folder management ───────────────────────────────────────────────
 async function getOrCreateImgFolder(fileHandle){
   try{
     const parentHandle=fileHandle.parentHandle||rootHandle;
-    const fileName=fileHandle.name.replace('.md','');
-    const imgFolderName='IMG_'+fileName;
-    const imgHandle=await parentHandle.getDirectoryHandle(imgFolderName,{create:true});
+    const imgHandle=await parentHandle.getDirectoryHandle('IMG',{create:true});
     return imgHandle;
   }catch(e){return null;}
 }

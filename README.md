@@ -84,15 +84,30 @@ A modern, web-based note management system with an interactive 3D spherical mind
 ```
 your-notes-folder/
 ├── notes.md
-├── IMG_notes/
+├── another-file.md
+├── IMG/
 │   ├── image1.png
-│   └── image2.jpg
-├── subfolder/
-│   ├── document.md
-│   └── IMG_document/
-│       └── diagram.png
-└── another-file.md
+│   ├── image2.jpg
+│   └── diagram.png
+└── subfolder/
+    ├── document.md
+    ├── research.md
+    └── IMG/
+        ├── chart.png
+        └── screenshot.jpg
 ```
+
+## Markdown Image Syntax
+
+Images are stored in an `IMG` folder within each directory. Reference them using:
+
+```markdown
+![alt text](IMG/image.png)
+![diagram](IMG/diagram.jpg)
+![screenshot](IMG/screenshot.png)
+```
+
+All images in the same folder share the same `IMG` directory, making it easy to organize and manage assets.
 
 ## Markdown Frontmatter
 
@@ -125,7 +140,7 @@ Your content here...
 
 ### Image Support
 - Insert images via the 🖼️ button in toolbar
-- Images stored in `IMG_filename` folders
+- Images stored in `IMG` folder within each directory
 - Automatic markdown syntax generation
 - Preview images in split/preview modes
 
