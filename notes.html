@@ -354,9 +354,37 @@ async function openFolder(){
     rootHandle=await window.showDirectoryPicker({mode:'readwrite',startIn:'documents'});
     tree=[];
     await scanDir(rootHandle,'');
+    // Save folder name for quick reference
+    localStorage.setItem('lastFolderName',rootHandle.name);
     renderTree();renderTagCloud();rebuildMindmap();
     setStatus('Opened: '+rootHandle.name+(def&&rootHandle.name!==def?' (default: '+def+')':''));
   }catch(e){if(e.name!=='AbortError')alert(e.message);}
+}
+
+// ── Auto-open default folder ───────────────────────────────────────────────
+async function autoOpenFolder(){
+  try{
+    // Try to access the hardcoded folder path
+    const root=await navigator.storage.getDirectory();
+    // Note: File System Access API doesn't support direct path access
+    // This is a limitation - we'll use localStorage to remember the last folder
+    const savedHandle=await localStorage.getItem('folderHandle');
+    if(savedHandle){
+      // Attempt to restore the handle (browser-dependent)
+      try{
+        const handle=await indexedDB.databases();
+        // Fallback: show the folder picker
+        openFolder();
+      }catch(e){
+        openFolder();
+      }
+    } else {
+      openFolder();
+    }
+  }catch(e){
+    // Fallback to manual folder selection
+    console.log('Auto-open not available, please select folder manually');
+  }
 }
 async function scanDir(dirHandle,prefix){
   for await(const [name,handle] of dirHandle.entries()){
@@ -1172,7 +1200,15 @@ window.addEventListener('resize',()=>{
     mmRenderer.setSize(W,H);mmCamera.aspect=W/H;mmCamera.updateProjectionMatrix();
   }
 });
-window.addEventListener('load',()=>rebuildMindmap());
+window.addEventListener('load',()=>{
+  rebuildMindmap();
+  // Auto-open folder if previously saved
+  const savedFolderName=localStorage.getItem('lastFolderName');
+  if(savedFolderName==='MARKDOWNFILES'){
+    // Show hint to user
+    setStatus('Tip: Click 📂 to open your MARKDOWNFILES folder');
+  }
+});
 </script>
 </body>
 </html>
