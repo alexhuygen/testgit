@@ -106,9 +106,11 @@ button:hover{background:var(--hover2)}
 #mindmap{width:100%;height:100%;display:block;cursor:grab}
 #mindmap:active{cursor:grabbing}
 #mm-labels{position:absolute;inset:0;pointer-events:none;overflow:hidden}
-.mm-label{position:absolute;font-size:10px;color:var(--text);white-space:nowrap;transform:translate(-50%,-140%);pointer-events:none;text-shadow:0 1px 3px #0009;transition:opacity .3s}
-.mm-label.dir{color:var(--green);font-size:11px;font-weight:600}
-.mm-label.root{color:var(--accent);font-size:12px;font-weight:700}
+.mm-label{position:absolute;font-size:10px;color:#fff;white-space:nowrap;transform:translate(-50%,-140%);pointer-events:none;text-shadow:0 1px 3px #0009;transition:opacity .3s;background:rgba(0,0,0,0.25);padding:2px 4px;border-radius:3px}
+body.light .mm-label{color:#000;text-shadow:0 1px 2px rgba(255,255,255,0.8)}
+.mm-label.dir{font-size:11px;font-weight:600;background:rgba(166,227,161,0.3)}
+.mm-label.root{font-size:12px;font-weight:700;background:rgba(137,180,250,0.35)}
+.mm-label.file{background:rgba(203,166,247,0.3)}
 .mm-label.faded{opacity:.18}
 #mm-hud{position:absolute;bottom:6px;left:6px;font-size:10px;color:var(--text3);background:var(--bg2);border:1px solid var(--border);border-radius:5px;padding:5px 8px;line-height:1.8;pointer-events:none}
 #mm-hud kbd{background:var(--hover2);border-radius:3px;padding:0 3px;font-size:10px;color:var(--text)}
@@ -181,6 +183,7 @@ button:hover{background:var(--hover2)}
     <button onclick="setMode('preview')">Preview</button>
     <button onclick="setMode('split')">Split</button>
     <div class="sep"></div>
+    <button onclick="insertImage()" title="Insert image">🖼️</button>
     <button onclick="saveFile()" title="Save (Ctrl+S)">💾</button>
     <button onclick="renameFile()" title="Rename">✏️</button>
     <button onclick="toggleMoveMenu()" title="Move to folder" id="btn-move">📂→</button>
@@ -212,13 +215,17 @@ button:hover{background:var(--hover2)}
         oninput="rebuildMindmap()">
     </label>
     <button onclick="rebuildMindmap()" title="Rebuild">↺</button>
+    <button onclick="refreshTags()" title="Refresh tags">🔄</button>
   </div>
   <div id="mm-wrap">
     <canvas id="mindmap"></canvas>
     <div id="mm-labels"></div>
     <div id="mm-hud">
       <kbd>W</kbd><kbd>S</kbd> tilt &nbsp;<kbd>A</kbd><kbd>D</kbd> rotate<br>
-      <kbd>+</kbd><kbd>−</kbd> zoom &nbsp; drag to orbit
+      <kbd>+</kbd><kbd>−</kbd> zoom &nbsp; drag to orbit<br>
+      <span style="font-size:9px;color:var(--accent);margin-top:4px;display:block">🖱️ Double-click file for tags</span>
+      <span style="font-size:9px;color:var(--accent);display:block">🖱️ Right-click folder to select</span>
+      <span id="mm-folder-hint" style="display:none;color:var(--accent);font-size:9px;margin-top:4px">📁 Folder selected</span>
     </div>
   </div>
   </div>
@@ -236,15 +243,17 @@ button:hover{background:var(--hover2)}
 
 <script>
 // ── State ──────────────────────────────────────────────────────────────────
-let rootHandle=null,tree=[],openTabs=[],activeTab=null,mode='edit';
+let rootHandle=null,tree=[],openTabs=[],activeTab=null,mode='preview';
 let selectedTags=new Set();
-let darkMode=true;
+let selectedFolder=null; // for folder selection in mindmap
+let darkMode=false; // default to light mode
 let mmScene,mmCamera,mmRenderer,mmAnimId;
 let mmNodes=[],mmObjects=[];
 let mmPhi=0,mmTheta=0,mmRadius=28;
 let mmDragging=false,mmPrevMouse={x:0,y:0};
 let mmKeys={};
 let draggedItem=null; // for file drag-drop
+let mmCameraTarget={x:0,y:0,z:0}; // smooth camera movement target
 
 // ── Theme ──────────────────────────────────────────────────────────────────
 function toggleTheme(){
@@ -253,6 +262,12 @@ function toggleTheme(){
   document.getElementById('theme-btn').textContent=darkMode?'☀️':'🌙';
   if(mmRenderer) mmRenderer.setClearColor(darkMode?0x181825:0xe6e9ef,1);
 }
+
+// Initialize light mode on load
+document.addEventListener('DOMContentLoaded',()=>{
+  document.body.classList.add('light');
+  document.getElementById('theme-btn').textContent='🌙';
+});
 
 // ── Settings / default folder ──────────────────────────────────────────────
 function toggleSettings(){
@@ -361,10 +376,10 @@ async function scanDir(dirHandle,prefix){
 // ── Tag cloud ──────────────────────────────────────────────────────────────
 function tagCounts(){
   const map={};
-  tree.filter(t=>t.kind==='file').forEach(f=>(f.tags||[]).forEach(t=>{map[t]=(map[t]||0)+1;}));
+  tree.filter(t=>t.kind==='file'||t.kind==='image').forEach(f=>(f.tags||[]).forEach(t=>{map[t]=(map[t]||0)+1;}));
   return map;
 }
-function clearTagFilter(){selectedTags.clear();renderTagCloud();renderTree();applyMindmapFilter();}
+function clearTagFilter(){selectedTags.clear();selectedFolder=null;renderTagCloud();renderTree();applyMindmapFilter();mmCameraTarget={x:0,y:0,z:0};mmRadius=28;updateCamera();}
 
 function renderTagCloud(){
   const cloud=document.getElementById('tag-cloud');
@@ -383,7 +398,9 @@ function renderTagCloud(){
     p.title=counts[t]+' note'+(counts[t]>1?'s':'');
     p.onclick=()=>{
       selectedTags.has(t)?selectedTags.delete(t):selectedTags.add(t);
+      selectedFolder=null;
       renderTagCloud();renderTree();applyMindmapFilter();
+      focusCameraOnFiltered();
     };
     cloud.appendChild(p);
   });
@@ -434,8 +451,17 @@ function renderTagCloud(){
 
 // ── Tree ───────────────────────────────────────────────────────────────────
 function filteredFiles(){
-  if(!selectedTags.size) return null; // null = show all
-  return tree.filter(t=>t.kind==='file'&&[...selectedTags].every(tag=>(t.tags||[]).includes(tag)));
+  if(!selectedTags.size&&!selectedFolder) return null; // null = show all
+  return tree.filter(t=>{
+    if(t.kind!=='file') return false;
+    let matches=true;
+    if(selectedTags.size) matches=[...selectedTags].every(tag=>(t.tags||[]).includes(tag));
+    if(selectedFolder){
+      const fileDir=t.path.includes('/')?t.path.split('/').slice(0,-1).join('/'):null;
+      matches=matches&&(fileDir===selectedFolder);
+    }
+    return matches;
+  });
 }
 function renderTree(){
   const el=document.getElementById('tree-pane');
@@ -478,11 +504,11 @@ function renderNode(node){
       fn.addEventListener('drop',e=>{e.preventDefault();fn.classList.remove('drag-over');dropFileOnFolder(child);});
       div.querySelector('.folder-children').appendChild(renderNode(child));
       frag.appendChild(div);
-    } else {
+    } else if(child.kind!=='tags'){
       const wrap=document.createElement('div');
       const div=document.createElement('div');
       div.className='file-item'+(activeTab&&activeTab.path===child.path?' active':'');
-      div.textContent='📄 '+child.name;
+      div.textContent='� '+child.name;
       div.draggable=true;
       div.addEventListener('dragstart',()=>{draggedItem=child;});
       div.addEventListener('dragend',()=>{draggedItem=null;});
@@ -553,6 +579,48 @@ async function openFile(item){
   document.getElementById('editor').value=activeTab.content;
   setMode(mode);updatePreview();renderCurrentTags();
   highlightMindmapNode(item.path);
+}
+
+// ── Open image ──────────────────────────────────────────────────────────────
+async function insertImage(){
+  if(!activeTab||activeTab.isImage) return;
+  
+  // Create IMG folder if needed
+  const imgHandle=await getOrCreateImgFolder(activeTab.handle);
+  if(!imgHandle){setStatus('Cannot create IMG folder');return;}
+  
+  // File picker for image
+  try{
+    const [fileHandle]=await window.showOpenFilePicker({
+      types:[{description:'Images',accept:{'image/*':['.png','.jpg','.jpeg','.gif','.webp','.svg']}}]
+    });
+    const file=await fileHandle.getFile();
+    const destHandle=await imgHandle.getFileHandle(file.name,{create:true});
+    const w=await destHandle.createWritable();
+    await w.write(await file.arrayBuffer());
+    await w.close();
+    
+    // Insert markdown syntax
+    const imgPath='IMG_'+activeTab.name.replace('.md','')+'/'+file.name;
+    const mdSyntax=`![${file.name}](${imgPath})`;
+    const editor=document.getElementById('editor');
+    const pos=editor.selectionStart;
+    const before=activeTab.content.substring(0,pos);
+    const after=activeTab.content.substring(pos);
+    activeTab.content=before+'\n'+mdSyntax+'\n'+after;
+    activeTab.dirty=true;
+    editor.value=activeTab.content;
+    renderTabs();updatePreview();
+    setStatus('Image inserted');
+  }catch(e){if(e.name!=='AbortError')alert('Insert failed: '+e.message);}
+}
+
+function prevImage(){
+  // Removed - no longer needed
+}
+
+function nextImage(){
+  // Removed - no longer needed
 }
 
 // ── Tabs ───────────────────────────────────────────────────────────────────
@@ -660,11 +728,12 @@ async function moveActiveFileTo(targetDirItem){
   }catch(e){alert('Move failed: '+e.message);}
 }
 
-// ── Tag editing (current file) ─────────────────────────────────────────────
+// ── Tag editing (current file/image) ───────────────────────────────────────
 function renderCurrentTags(){
   const ct=document.getElementById('current-tags');ct.innerHTML='';
   if(!activeTab) return;
-  getFileTags(activeTab.content).forEach(t=>{
+  const tags=getFileTags(activeTab.content);
+  tags.forEach(t=>{
     const s=document.createElement('span');s.className='ctag';s.textContent='#'+t;
     s.onclick=()=>removeTag(t);ct.appendChild(s);
   });
@@ -756,6 +825,62 @@ document.addEventListener('keyup',e=>{mmKeys[e.key]=false;});
 document.getElementById('rename-input').addEventListener('keydown',e=>{if(e.key==='Enter')doRename();});
 document.getElementById('new-input').addEventListener('keydown',e=>{if(e.key==='Enter')doNew();});
 
+// ── Image tagging (sidecar .tags.json files) ──────────────────────────────
+async function getOrCreateImgFolder(fileHandle){
+  try{
+    const parentHandle=fileHandle.parentHandle||rootHandle;
+    const fileName=fileHandle.name.replace('.md','');
+    const imgFolderName='IMG_'+fileName;
+    const imgHandle=await parentHandle.getDirectoryHandle(imgFolderName,{create:true});
+    return imgHandle;
+  }catch(e){return null;}
+}
+
+// ── Camera focus on filtered nodes ────────────────────────────────────────
+function focusCameraOnFiltered(){
+  if(!mmNodes.length) return;
+  
+  // Find visible nodes (not faded)
+  const visibleNodes=mmNodes.filter(n=>n.mesh.material.opacity>0.5);
+  if(!visibleNodes.length) return;
+  
+  // Calculate center and extent of visible nodes
+  let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity,minZ=Infinity,maxZ=-Infinity;
+  visibleNodes.forEach(n=>{
+    minX=Math.min(minX,n.pos.x);maxX=Math.max(maxX,n.pos.x);
+    minY=Math.min(minY,n.pos.y);maxY=Math.max(maxY,n.pos.y);
+    minZ=Math.min(minZ,n.pos.z);maxZ=Math.max(maxZ,n.pos.z);
+  });
+  
+  const centerX=(minX+maxX)/2;
+  const centerY=(minY+maxY)/2;
+  const centerZ=(minZ+maxZ)/2;
+  
+  const extentX=maxX-minX;
+  const extentY=maxY-minY;
+  const extentZ=maxZ-minZ;
+  const maxExtent=Math.max(extentX,extentY,extentZ);
+  
+  // Set camera target and radius
+  mmCameraTarget={x:centerX,y:centerY,z:centerZ};
+  mmRadius=Math.max(8,maxExtent*1.5);
+  updateCamera();
+}
+async function refreshTags(){
+  if(!rootHandle){setStatus('Open a folder first');return;}
+  try{
+    // Re-scan all markdown files to reload tags
+    for(const item of tree.filter(t=>t.kind==='file')){
+      const file=await item.handle.getFile();
+      const content=await file.text();
+      item.tags=getFileTags(content);
+      item.title=extractTitle(content,item.name);
+    }
+    renderTree();renderTagCloud();rebuildMindmap();
+    setStatus('Tags refreshed');
+  }catch(e){alert('Refresh failed: '+e.message);}
+}
+
 // ── 3D Mindmap ─────────────────────────────────────────────────────────────
 function rebuildMindmap(){
   const canvas=document.getElementById('mindmap');
@@ -779,53 +904,73 @@ function rebuildMindmap(){
   const files=tree.filter(t=>t.kind==='file');
   const dirPaths=[...new Set(files.map(f=>f.path.includes('/')?f.path.split('/').slice(0,-1).join('/'):null).filter(Boolean))];
   const nodeMap={};
+  const lineMap=[]; // track all lines for filtering
 
   // root
   const rootPos=new THREE.Vector3(0,0,0);
-  const rootMesh=makeSphere(1.2,0x89b4fa);
+  const rootMesh=makeSphere(0.78,0x89b4fa);
+  rootMesh.material.transparent=true;
+  rootMesh.material.opacity=0;
   mmScene.add(rootMesh);
   nodeMap['__root__']={mesh:rootMesh,pos:rootPos};
-  mmNodes.push({mesh:rootMesh,pos:rootPos,labelEl:makeLabel(rootHandle?rootHandle.name:'Notes','root'),fileTags:null});
+  const hiddenRootLabel=makeLabel('','root');
+  hiddenRootLabel.style.display='none';
+  mmNodes.push({mesh:rootMesh,pos:rootPos,labelEl:hiddenRootLabel,fileTags:null});
 
-  // dirs
+  // dirs - distributed spherically
   dirPaths.forEach((dir,i)=>{
-    const angle=(i/Math.max(dirPaths.length,1))*Math.PI*2;
+    const phi=Math.acos(2*(i+0.5)/Math.max(dirPaths.length,1)-1);
+    const theta=(i/Math.max(dirPaths.length,1))*Math.PI*2*1.618;
     const spread=parseFloat(document.getElementById('mm-spread').value);
-    const pos=new THREE.Vector3(Math.cos(angle)*spread,Math.sin(angle)*spread*0.5,(Math.random()-.5)*spread*0.4);
-    const mesh=makeSphere(0.75,0xa6e3a1);
+    const pos=new THREE.Vector3(
+      Math.sin(phi)*Math.cos(theta)*spread,
+      Math.cos(phi)*spread*0.6,
+      Math.sin(phi)*Math.sin(theta)*spread
+    );
+    const mesh=makeSphere(0.55,0xa6e3a1);
     mesh.position.copy(pos);mmScene.add(mesh);
-    addLine(rootPos,pos,0x45475a);
+    const line=addLine(rootPos,pos,0x8a8a9a); // 50% lighter than 0x45475a
+    lineMap.push({line,fromNode:'__root__',toNode:dir,type:'dir'});
     nodeMap[dir]={mesh,pos};
     mmNodes.push({mesh,pos,labelEl:makeLabel(dir.split('/').pop(),'dir'),fileTags:null,isDir:true,dirPath:dir});
   });
 
-  // files
+  // files - distributed spherically around their parent
   files.forEach((f,i)=>{
     const parentKey=f.path.includes('/')?f.path.split('/').slice(0,-1).join('/'):null;
     const parent=nodeMap[parentKey]||nodeMap['__root__'];
-    const angle=(i/Math.max(files.length,1))*Math.PI*2+(Math.random()-.5)*0.8;
+    const phi=Math.acos(2*(i+0.5)/Math.max(files.length,1)-1);
+    const theta=(i/Math.max(files.length,1))*Math.PI*2*1.618;
     const spread=parseFloat(document.getElementById('mm-spread').value);
-    const r=(spread*0.45)+Math.random()*(spread*0.25);
+    const r=(spread*0.5)+Math.random()*(spread*0.15);
     const pos=new THREE.Vector3(
-      parent.pos.x+Math.cos(angle)*r,
-      parent.pos.y+Math.sin(angle)*r*0.55,
-      parent.pos.z+(Math.random()-.5)*3
+      parent.pos.x+Math.sin(phi)*Math.cos(theta)*r,
+      parent.pos.y+Math.cos(phi)*r*0.6,
+      parent.pos.z+Math.sin(phi)*Math.sin(theta)*r
     );
     const isActive=activeTab&&activeTab.path===f.path;
-    const mesh=makeSphere(0.38,isActive?0xf38ba8:0xcba6f7);
+    const mesh=makeSphere(0.27,isActive?0xf38ba8:0xcba6f7);
     mesh.position.copy(pos);mesh.userData.fileItem=f;
     mmScene.add(mesh);
-    addLine(parent.pos,pos,0x313244);
+    const line=addLine(parent.pos,pos,0x8a8a9a);
+    lineMap.push({line,fromNode:parentKey||'__root__',toNode:f.path,type:'file',filePath:f.path,fileTags:f.tags||[]});
     mmObjects.push(mesh);
     mmNodes.push({mesh,pos,labelEl:makeLabel(f.title||f.name.replace('.md',''),'file'),fileTags:f.tags||[],filePath:f.path});
   });
 
-  mmScene.add(new THREE.AmbientLight(0xffffff,0.7));
-  const dl=new THREE.DirectionalLight(0xffffff,0.8);
-  dl.position.set(10,20,10);mmScene.add(dl);
+  // store lineMap globally for filtering
+  window.mmLineMap=lineMap;
+
+  mmScene.add(new THREE.AmbientLight(0xffffff,0.85));
+  const dl=new THREE.DirectionalLight(0xffffff,1.0);
+  dl.position.set(15,25,15);mmScene.add(dl);
+  const dl2=new THREE.DirectionalLight(0xffffff,0.4);
+  dl2.position.set(-10,-5,-10);mmScene.add(dl2);
 
   // mouse
   const raycaster=new THREE.Raycaster(),mouse=new THREE.Vector2();
+  let lastClickTime=0,lastClickObj=null;
+  
   canvas.onmousedown=e=>{mmDragging=true;mmPrevMouse={x:e.clientX,y:e.clientY};};
   canvas.onmouseup=e=>{
     if(Math.abs(e.clientX-mmPrevMouse.x)<4&&Math.abs(e.clientY-mmPrevMouse.y)<4){
@@ -834,9 +979,55 @@ function rebuildMindmap(){
       mouse.y=-((e.clientY-rect.top)/H)*2+1;
       raycaster.setFromCamera(mouse,mmCamera);
       const hits=raycaster.intersectObjects(mmObjects);
-      if(hits.length&&hits[0].object.userData.fileItem) openFile(hits[0].object.userData.fileItem);
+      
+      if(hits.length){
+        const now=Date.now();
+        const isDoubleClick=lastClickObj===hits[0].object&&(now-lastClickTime)<300;
+        lastClickTime=now;
+        lastClickObj=hits[0].object;
+        
+        if(isDoubleClick&&hits[0].object.userData.fileItem){
+          // Double-click: filter by file tags
+          const file=hits[0].object.userData.fileItem;
+          if(file.tags&&file.tags.length){
+            selectedTags.clear();
+            file.tags.forEach(t=>selectedTags.add(t));
+            selectedFolder=null;
+            applyMindmapFilter();
+            renderTagCloud();
+            renderTree();
+            focusCameraOnFiltered();
+            setStatus('Filtered by tags: '+file.tags.join(', '));
+          }
+        } else {
+          // Single-click: open file
+          if(hits[0].object.userData.fileItem) openFile(hits[0].object.userData.fileItem);
+        }
+      }
     }
     mmDragging=false;
+  };
+  // right-click on nodes to select folder
+  canvas.oncontextmenu=e=>{
+    e.preventDefault();
+    const rect=canvas.getBoundingClientRect();
+    mouse.x=((e.clientX-rect.left)/W)*2-1;
+    mouse.y=-((e.clientY-rect.top)/H)*2+1;
+    raycaster.setFromCamera(mouse,mmCamera);
+    const allMeshes=mmNodes.map(n=>n.mesh);
+    const hits=raycaster.intersectObjects(allMeshes);
+    if(hits.length){
+      const hitNode=mmNodes.find(n=>n.mesh===hits[0].object);
+      if(hitNode&&hitNode.isDir){
+        selectedFolder=hitNode.dirPath;
+        selectedTags.clear();
+        applyMindmapFilter();
+        renderTagCloud();
+        renderTree();
+        focusCameraOnFiltered();
+        setStatus('Folder selected: '+hitNode.dirPath);
+      }
+    }
   };
   canvas.onmousemove=e=>{
     if(!mmDragging) return;
@@ -868,21 +1059,35 @@ function rebuildMindmap(){
   loop();
 }
 
-// Apply tag filter to mindmap: dim non-matching nodes, don't rebuild
+// Apply tag filter to mindmap: dim non-matching nodes and lines, highlight matching connections
 function applyMindmapFilter(){
   if(!mmNodes.length) return;
-  const noFilter=!selectedTags.size;
+  const noFilter=!selectedTags.size&&!selectedFolder;
+
+  // show/hide folder hint
+  document.getElementById('mm-folder-hint').style.display=selectedFolder?'block':'none';
 
   // collect which dir paths have at least one matching file
   const matchingDirs=new Set();
+  const matchingFiles=new Set();
   if(!noFilter){
     tree.filter(t=>t.kind==='file').forEach(f=>{
-      if([...selectedTags].every(tag=>(f.tags||[]).includes(tag))){
+      let matches=true;
+      // check tag filter
+      if(selectedTags.size) matches=[...selectedTags].every(tag=>(f.tags||[]).includes(tag));
+      // check folder filter
+      if(selectedFolder){
+        const fileDir=f.path.includes('/')?f.path.split('/').slice(0,-1).join('/'):null;
+        matches=matches&&(fileDir===selectedFolder);
+      }
+      if(matches){
+        matchingFiles.add(f.path);
         if(f.path.includes('/')) matchingDirs.add(f.path.split('/').slice(0,-1).join('/'));
       }
     });
   }
 
+  // filter nodes
   for(const n of mmNodes){
     let match=true;
     if(!noFilter){
@@ -891,7 +1096,7 @@ function applyMindmapFilter(){
         if(n.isDir) match=matchingDirs.has(n.dirPath);
         else match=true; // root always visible
       } else {
-        match=[...selectedTags].every(tag=>n.fileTags.includes(tag));
+        match=matchingFiles.has(n.filePath);
       }
     }
     const opacity=match?1:0.08;
@@ -899,13 +1104,35 @@ function applyMindmapFilter(){
     n.mesh.material.transparent=true;
     n.labelEl.classList.toggle('faded',!match);
   }
+
+  // filter lines
+  if(window.mmLineMap){
+    for(const lm of window.mmLineMap){
+      let lineMatch=true;
+      if(!noFilter){
+        if(lm.type==='dir'){
+          // dir line: show if dir has matching files
+          lineMatch=matchingDirs.has(lm.toNode);
+        } else {
+          // file line: show if file matches
+          lineMatch=matchingFiles.has(lm.filePath);
+        }
+      }
+      const lineOpacity=lineMatch?1:0.05;
+      const lineColor=lineMatch?(lm.type==='dir'?0x45475a:0x313244):0x1a1a1a;
+      lm.line.material.opacity=lineOpacity;
+      lm.line.material.transparent=true;
+      lm.line.material.color.setHex(lineColor);
+      lm.line.material.linewidth=lineMatch?2:1;
+    }
+  }
 }
 
 function updateCamera(){
-  mmCamera.position.x=mmRadius*Math.sin(mmTheta)*Math.cos(mmPhi);
-  mmCamera.position.y=mmRadius*Math.sin(mmPhi);
-  mmCamera.position.z=mmRadius*Math.cos(mmTheta)*Math.cos(mmPhi);
-  mmCamera.lookAt(0,0,0);
+  mmCamera.position.x=mmCameraTarget.x+mmRadius*Math.sin(mmTheta)*Math.cos(mmPhi);
+  mmCamera.position.y=mmCameraTarget.y+mmRadius*Math.sin(mmPhi);
+  mmCamera.position.z=mmCameraTarget.z+mmRadius*Math.cos(mmTheta)*Math.cos(mmPhi);
+  mmCamera.lookAt(mmCameraTarget.x,mmCameraTarget.y,mmCameraTarget.z);
 }
 function updateLabels(){
   const canvas=document.getElementById('mindmap');
@@ -919,7 +1146,7 @@ function updateLabels(){
   }
 }
 function makeSphere(r,color){
-  return new THREE.Mesh(new THREE.SphereGeometry(r,12,12),new THREE.MeshPhongMaterial({color,transparent:false,opacity:1}));
+  return new THREE.Mesh(new THREE.SphereGeometry(r,24,24),new THREE.MeshPhongMaterial({color,transparent:false,opacity:1,shininess:100,emissive:0x000000}));
 }
 function makeLabel(text,cls){
   const el=document.createElement('div');
@@ -929,7 +1156,9 @@ function makeLabel(text,cls){
   return el;
 }
 function addLine(a,b,color){
-  mmScene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([a,b]),new THREE.LineBasicMaterial({color})));
+  const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints([a,b]),new THREE.LineBasicMaterial({color,linewidth:2}));
+  mmScene.add(line);
+  return line;
 }
 function highlightMindmapNode(path){
   for(const obj of mmObjects){
